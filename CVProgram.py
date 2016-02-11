@@ -1,7 +1,11 @@
 import cv2
 import urllib2
 import numpy as np
+from networktables import NetworkTable
+from networktables import NumberArray
 import math
+
+table = NetworkTable.getTable("ComVision")
 
 # Opens the Axis IP camera with password - can be substituted for VideoCapture
 urll = "http://172.17.3.33/axis-cgi/mjpg/video.cgi"
@@ -18,6 +22,12 @@ urllib2.install_opener(urlll)
 
 stream = urllib2.urlopen(urll)
 
+
+def SendNumArray(table, key, arr):
+    if isinstance(arr, np.ndarray):
+        arr = arr.flatten().tolist()
+    mail = NumberArray.from_list(arr)
+    table.putValue(key, mail)
 
 
 def drawPoint(image, point, color, thickness=2):
@@ -80,6 +90,7 @@ while True:
 
     # Find corners of U: Find contour and then do a convex hull and approxPolyDP, then we'll have a 4-gon of corners.
     contours, hierarchy = cv2.findContours(filtered, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    executed = False
     if len(contours) > 0:
         cont = contours[0]
         maxarea = cv2.contourArea(cont)
@@ -99,6 +110,7 @@ while True:
         # only happens in the top-right corner.
         #try:
         if len(poly) == 4:
+            executed = True
             trindex = 0
             for i in range(len(poly)):
                 p0 = poly[i, 0]
@@ -124,10 +136,12 @@ while True:
             rmat, jacobian = cv2.Rodrigues(rvec)
             center, jacobian = cv2.projectPoints(np.float32([[0,0,0]]), rvec, tvec, matrix, distCoeffs)
             drawPoint(image, center[0,0], (0, 255, 255), 10)
-            p = (sum([i[0]**2 for i in tvec]))**(0.5)
-            p = int(p)
             drawPoint(image, tvec, (255, 0, 0))
-            drawPoint(image, np.add(np.dot(rmat, origin), tvec), (255, 255, 255))
+            table.putDouble("Distance",dist)
+            SendNumArray(table, "CamRotation", camRVec)
+            SendNumArray(table, "CamTranslation", camT)
+    table.putBoolean("Executed", executed)
+
 
     # Show results
     #cv2.putText(image,str(hslimage[track[1], track[0]]),(10,50), font, 1,(255,255,255),2)
