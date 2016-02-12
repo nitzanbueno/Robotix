@@ -84,7 +84,7 @@ def filterHSL(image):
     return cv2.inRange(hslimage, lower, upper)
 
 def getMaxContour(filtered):
-    contours, hierarchy = cv2.findContours(filtered, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+    image, contours, hierarchy = cv2.findContours(filtered, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     if len(contours) <= 0:
         return None
     cont = contours[0]
@@ -102,17 +102,21 @@ def extractPolygon(cont, acc=0.1):
     poly = cv2.approxPolyDP(convex, epsilon, True)
     return poly
 
-def getTopRight(cont, poly):
+def getTopRight(cont, corners):
+    # Now corners is a 4-gon of corners, and we have to find a relative point.
+    # We find the top right point of the U by doing the following check:
+    # If the midpoint between the next point (in a counter-clockwise rotation (for some reason it's not clockwise))
+    # and the current point is NOT in the contour, it's the valley part of the U (the "hole" of the U), and that
+    # only happens in the top-right corner.
     trindex = 0
-    for i in range(len(poly)):
-        p0 = poly[i, 0]
-        p1 = poly[(i+1)%len(poly), 0]
+    for i in range(len(corners)):
+        p0 = corners[i, 0]
+        p1 = corners[(i+1)%len(corners), 0]
         mid = (int((p0[0] + p1[0])/2), int((p0[1] + p1[1])/2))
         dist = cv2.pointPolygonTest(cont,mid,False)
         if dist < 0:
-            trindex = i
-            break
-    return trindex
+            return i
+    return None
 
 def sortClockwise(poly, trindex):
     return np.array([[poly[(i+trindex)%len(poly),0] for i in range(len(poly))]]).astype("float32")
@@ -129,6 +133,14 @@ def getInnerCorners(filtered, poly):
     innerCorners = extractPolygon(cont)
     return innerCorners
 
+def getUCorners(filtered):
+    # Find corners of U: Find contour and then do a convex hull and approxPolyDP, then we'll have a 4-gon of corners.
+    contour = getMaxContour(filtered)
+    if contour != None:
+        corners = extractPolygon(contour, 0.1)
+        if len(corners) == 4:
+            return corners
+    return None
 
 np.set_printoptions(precision=1)
 np.set_printoptions(suppress=True)
@@ -138,42 +150,35 @@ while True:
     if image == None:
         continue
 
-    # Find corners of U: Find contour and then do a convex hull and approxPolyDP, then we'll have a 4-gon of corners.
-    oldfiltered = np.array(filtered)
-    cont = getMaxContour(filtered)
-    executed = False
-    if cont != None:
-        poly = extractPolygon(cont, 0.1)
-        # Now poly is a 4-gon of corners, and we have to find a relative point.
-        # We find the top right point of the U by doing the following check:
-        # If the midpoint between the next point (in a counter-clockwise rotation (for some reason it's not clockwise))
-        # and the current point is NOT in the contour, it's the valley part of the U (the "hole" of the U), and that
-        # only happens in the top-right corner.
-        if len(poly) == 4:
-            executed = True
-            trindex = getTopRight(cont, poly)
-            cv2.drawContours(image, [poly], -1, (255, 255, 255), thickness=4)
-            inner = getInnerCorners(oldfiltered, poly)
-            cv2.drawContours(image, [inner], -1, (255, 0, 0), thickness=4)
-            drawPoint(image, poly[trindex, 0], (255, 0, 0), thickness=10)
-            drawPoint(image, poly[(trindex+1)%4, 0], (0,255,255), thickness=10)
-            # Now comes the problematic part - the camera calibration (or position location).
-            corners = sortClockwise(poly, trindex)
-            retval, matrix, distCoeffs, rvecs, tvecs = cv2.calibrateCamera(points, corners, (600,800), None, flags=cv2.CALIB_USE_INTRINSIC_GUESS)
-            tvec = tvecs[0]
-            rvec = rvecs[0]
-            camR, camT = getCamInfo(rvecs, tvecs)
-            dist = np.linalg.norm(camT)
-            camRVec, jacobian = cv2.Rodrigues(camR)
-            drawText(image, matrix)
-            origin = np.array([[0],[2],[0]])
-            rmat, jacobian = cv2.Rodrigues(rvec)
-            center, jacobian = cv2.projectPoints(np.float32([[0,0,0]]), rvec, tvec, matrix, distCoeffs)
-            drawPoint(image, center[0,0], (0, 255, 255), 10)
-            drawPoint(image, tvec, (255, 0, 0))
-            table.putDouble("Distance",dist)
-            SendNumArray(table, "CamRotation", camRVec)
-            SendNumArray(table, "CamTranslation", camT)
+
+    executed = False # Lets us know whether an actual U has been tracked or not this tick.
+    corners = getUCorners(filtered)
+    if corners != None:
+        executed = True
+        trindex = getTopRight(cont, corners)
+        inner = getInnerCorners(oldfiltered, corners)
+
+        cv2.drawContours(image, [corners], -1, (255, 255, 255), thickness=4)
+        cv2.drawContours(image, [inner], -1, (255, 0, 0), thickness=4)
+        drawPoint(image, corners[trindex, 0], (255, 0, 0), thickness=10)
+        drawPoint(image, corners[(trindex+1)%4, 0], (0,255,255), thickness=10)
+        # Now comes the problematic part - the camera calibration (or position location).
+        corners = sortClockwise(corners, trindex)
+        retval, matrix, distCoeffs, rvecs, tvecs = cv2.calibrateCamera(points, corners, (600,800), None, flags=cv2.CALIB_USE_INTRINSIC_GUESS)
+        tvec = tvecs[0]
+        rvec = rvecs[0]
+        camR, camT = getCamInfo(rvecs, tvecs)
+        dist = np.linalg.norm(camT)
+        camRVec, jacobian = cv2.Rodrigues(camR)
+        drawText(image, matrix)
+        origin = np.array([[0],[2],[0]])
+        rmat, jacobian = cv2.Rodrigues(rvec)
+        center, jacobian = cv2.projectPoints(np.float32([[0,0,0]]), rvec, tvec, matrix, distCoeffs)
+        drawPoint(image, center[0,0], (0, 255, 255), 10)
+        drawPoint(image, tvec, (255, 0, 0))
+        table.putDouble("Distance",dist)
+        SendNumArray(table, "CamRotation", camRVec)
+        SendNumArray(table, "CamTranslation", camT)
     table.putBoolean("Executed", executed)
 
 
